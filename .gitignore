@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+Training outputs
+
+runs/
+
+Model weights
+
+*.pt
+*.pth
+
+Datasets
+
+accident_dataset/
+custom_dataset/
+data/
+trafficnet_dataset_v1/
+AccidentDetection-9k*/
+Injuredpeopledetection*/
