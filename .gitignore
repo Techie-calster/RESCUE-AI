@@ -25,4 +25,5 @@ custom_dataset/
 data/
 trafficnet_dataset_v1/
 AccidentDetection-9k*/
-Injuredpeopledetection*/
+Injured people detection.v1i.yolov11*/
+archive*/
