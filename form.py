@@ -1,5 +1,7 @@
 """
-accident form + live location + map + image upload version 2
+accident form + live location + map + image upload version 3
+"""
+"""
 RESCUE-AI - Phase 1-3 frontend
 Incident form + live location + map + image upload.
 
@@ -8,7 +10,7 @@ Install:
 
 Run:
     streamlit run app.py
-""" 
+"""
 
 import json
 from datetime import datetime
@@ -35,6 +37,7 @@ CASUALTY_OPTIONS = ["Unknown", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 ss = st.session_state
 ss.setdefault("lat", None)
 ss.setdefault("lon", None)
+ss.setdefault("gps", None)               # (lat, lon, accuracy_m) as reported by the browser
 ss.setdefault("request_gps", False)      # True only after the button is clicked
 ss.setdefault("last_click", None)        # last map click already processed
 ss.setdefault("map_center", DEFAULT_CENTER)
@@ -71,6 +74,7 @@ if ss.request_gps:
     if loc and "coords" in loc:
         ss.lat = loc["coords"]["latitude"]
         ss.lon = loc["coords"]["longitude"]
+        ss.gps = (ss.lat, ss.lon, loc["coords"].get("accuracy"))
         ss.map_center = (ss.lat, ss.lon)
         ss.map_zoom = 17
         ss.request_gps = False
@@ -82,11 +86,24 @@ if ss.request_gps:
 
 if ss.lat is not None:
     st.write(f"**Current pin:** {ss.lat:.6f}, {ss.lon:.6f}")
+    if ss.gps and ss.gps[2]:
+        st.caption(f"Device location accuracy: about ±{ss.gps[2]:.0f} m (blue circle). "
+                   "Click the map to move the pin to the exact spot.")
 else:
     st.info("Click the button above, or click directly on the map to place the pin.")
 
 # 2) Map with pin
 m = folium.Map(location=ss.map_center, zoom_start=ss.map_zoom, control_scale=True)
+if ss.gps and ss.gps[2]:
+    # Blue circle = area where the device thinks you are; the pin can be anywhere.
+    folium.Circle(
+        [ss.gps[0], ss.gps[1]],
+        radius=ss.gps[2],
+        color="#1a73e8",
+        fill=True,
+        fill_opacity=0.12,
+        tooltip=f"Your device location (±{ss.gps[2]:.0f} m)",
+    ).add_to(m)
 if ss.lat is not None:
     folium.Marker(
         [ss.lat, ss.lon],
