@@ -1,5 +1,5 @@
 """
-accident form + live location + map + image upload version 4
+accident form + live location + map + image upload version 5
 """
 """
 RESCUE-AI - Phase 1-3 frontend
@@ -170,7 +170,7 @@ with st.container(border=True):
         st.image(image_file, caption="Uploaded image", use_container_width=True)
 
 # ---------------------------------------------------------------- submit
-if st.button("🚨 Analyze Incident", type="primary"):
+if st.button("🚨 Submit Report", type="primary"):
     errors = []
     if ss.lat is None:
         errors.append("Please set the accident location on the map.")
@@ -205,7 +205,7 @@ if st.button("🚨 Analyze Incident", type="primary"):
 
         report_json = json.dumps(incident_data, indent=2, ensure_ascii=False)
 
-        st.success("✅ Incident report submitted.")
+        st.success("✅ Report submitted. Emergency analysis will now run in the background.")
         st.markdown("**Incident report (JSON)**")
         st.code(report_json, language="json")
         st.download_button(
@@ -215,6 +215,7 @@ if st.button("🚨 Analyze Incident", type="primary"):
             mime="application/json",
         )
 
-        # ---- Phase 3 hook: connect the Vision Agent here ----
+        # ---- Backend hand-off (user-facing part ends here) ----
+        # incident_data + image_bytes -> Vision Agent -> Incident State -> ...
         # from vision_agent import analyze_image
         # vision_result = analyze_image(image_bytes)
