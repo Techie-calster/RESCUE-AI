@@ -11,6 +11,8 @@ Commands:
     python accident_model.py check                     # inspect the dataset
     python accident_model.py negatives <folder> [N] [max]  # add accident-free photos to training; hold out N (default 60) for testing; use at most `max` for training
     python accident_model.py negatives_each <parent> [fraction] [max]  # same, for every sub-folder: hold out `fraction` (default 0.2), use at most `max` (default 600) per folder
+    python accident_model.py add_dataset <root>        # add another labelled YOLO dataset to training (its train+valid only; test is never used)
+    python accident_model.py finetune [epochs] [imgsz] [ram|disk]  # continue from the current best weights on everything added (default 30 epochs)
     python accident_model.py train [epochs] [imgsz] [ram|disk]  # default 80 epochs, size 800. ram/disk caches decoded images (faster when data loading is the bottleneck)
     python accident_model.py resume                    # continue an interrupted run
     python accident_model.py report                    # test-set results + saved mistakes
@@ -33,6 +35,8 @@ ACCIDENT_CONF = 0.3  # chosen from report + falsealarm: ~98% of test accidents f
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "runs")).resolve()
 NEG_TRAIN = Path("negatives_train").resolve()      # accident-free photos used for training
 NEG_HOLDOUT = Path("negatives_holdout").resolve()  # accident-free photos kept for testing only
+EXTRA_TRAIN = Path("extra_train").resolve()        # training images from extra datasets (see add_dataset)
+EXTRA_VALID = Path("extra_valid").resolve()        # validation images from extra datasets
 YAML_FIXED = Path("data_fixed.yaml").resolve()
 MAX_SIDE = 800  # normal photos are shrunk to this longest side when added (big JPEGs slow training down a lot)
 
@@ -44,27 +48,39 @@ def dev():
 
 
 # ------------------------------------------------------------------ dataset helpers
-def find_split(split):
-    """Folder with images/ and labels/ for a split (handles train/ and the nested train/train/ layout)."""
-    for cand in (DATASET_DIR / split, DATASET_DIR / split / split):
+def split_in(root, split):
+    """Folder with images/ and labels/ for a split of the dataset at `root` (None if absent).
+    Handles train/, the nested train/train/ layout and extra wrapper folders."""
+    root = Path(root)
+    for cand in (root / split, root / split / split):
         if (cand / "images").exists():
             return cand
-    for p in sorted(DATASET_DIR.rglob("images")):
+    for p in sorted(root.rglob("images")):
         if p.parent.name == split:
             return p.parent
-    raise SystemExit(f"Could not find '{split}/images' under {DATASET_DIR}. Check DATASET_DIR.")
+    return None
 
+def find_split(split):
+    d = split_in(DATASET_DIR, split)
+    if d is None:
+        raise SystemExit(f"Could not find '{split}/images' under {DATASET_DIR}. Check DATASET_DIR.")
+    return d
 
-def class_names():
+def names_in(root):
+    """Class names from the dataset's data.yaml, or None if there isn't one."""
     import yaml
-    for p in [DATASET_DIR / "data.yaml", *DATASET_DIR.rglob("data.yaml")]:
+    root = Path(root)
+    for p in [root / "data.yaml", *root.rglob("data.yaml")]:
         if p.exists():
             names = yaml.safe_load(p.read_text()).get("names")
             if isinstance(names, dict):
                 names = [names[k] for k in sorted(names, key=int)]
             if names:
                 return list(names)
-    return ["Accident"]
+    return None
+
+def class_names():
+    return names_in(DATASET_DIR) or ["Accident"]
 
 
 def label_rows(path):
@@ -159,14 +175,58 @@ def make_negatives_each(parent, holdout_fraction=0.2, max_train=600):
         print(f"== {d.name} ({n} photos)")
         make_negatives(d, max(1, round(n * holdout_fraction)), max_train)
 
+def add_dataset(root, tag=None):
+    """Add another labelled dataset (YOLO format) to training. Only its train and valid splits are used; its
+    test split is never touched, so you can still test on it afterwards.
+    Only boxes of the class named 'accident' are kept (as class 0). Images left without a box become
+    accident-free negatives, which is how its normal photos help."""
+    import re
+    root = Path(root)
+    names = names_in(root)
+    if names is None:
+        ids = {0}
+        print("WARNING: no data.yaml found, assuming class id 0 is 'accident'. Check your label files!")
+    else:
+        ids = {i for i, n in enumerate(names) if str(n).lower() == "accident"}
+        if not ids:
+            raise SystemExit(f"No class named 'accident' in {names}. Nothing to add.")
+    tag = tag or (re.sub(r"\W+", "_", root.name)[:25].strip("_") or "extra")
+    print(f"Dataset {root.name!r}: classes {names} -> keeping ids {sorted(ids)} as 'Accident'")
+    for split, dest in (("train", EXTRA_TRAIN), ("valid", EXTRA_VALID)):
+        d = split_in(root, split)
+        if d is None:
+            print(f"  [{split}] not found, skipped"); continue
+        oi, ol = dest / tag / "images", dest / tag / "labels"
+        shutil.rmtree(dest / tag, ignore_errors=True)
+        oi.mkdir(parents=True); ol.mkdir(parents=True)
+        n = acc = 0
+        for img in images_in(d / "images"):
+            lines = []
+            lf = d / "labels" / (img.stem + ".txt")
+            if lf.exists():
+                for ln in lf.read_text().splitlines():
+                    p = ln.split()
+                    if len(p) >= 5 and int(p[0]) in ids:
+                        lines.append(" ".join(["0"] + p[1:]))
+            shutil.copyfile(img, oi / img.name)
+            (ol / (img.stem + ".txt")).write_text("\n".join(lines) + ("\n" if lines else ""))
+            n += 1; acc += bool(lines)
+        print(f"  [{split}] {n} images: {acc} with accident, {n - acc} accident-free -> {dest / tag}")
+    print("Its test split was not used. To remove extra data later: rm -rf extra_train extra_valid")
+
 
 # ------------------------------------------------------------------ training
 def write_yaml():
     import json
     train_dirs = [str(find_split("train") / "images")]
+    val_dirs = [str(find_split("valid") / "images")]
     if (NEG_TRAIN / "images").exists():
         train_dirs.append(str(NEG_TRAIN / "images"))
         print("Including negatives from", NEG_TRAIN)
+    for d in sorted(EXTRA_TRAIN.glob("*/images")):
+        train_dirs.append(str(d)); print("Including extra training data from", d.parent)
+    for d in sorted(EXTRA_VALID.glob("*/images")):
+        val_dirs.append(str(d)); print("Including extra validation data from", d.parent)
     names = class_names()
     YAML_FIXED.write_text(
         f"train: {json.dumps(train_dirs)}\n"
@@ -186,6 +246,21 @@ def train(epochs=80, imgsz=800, cache=False):
         batch=(16 if imgsz <= 640 else 8) if gpu else (8 if imgsz <= 640 else 4),
         device=dev(), workers=4 if gpu else 2, patience=20, cache=cache,
         project=str(RUNS_DIR), name=f"accident_det_{imgsz}",
+    )
+
+def finetune(epochs=30, imgsz=800, cache=False):
+    """Continue from the current best weights (WEIGHTS, or the newest run) on the full training mix, including
+    anything added with `negatives` / `add_dataset`. Gentler learning rate, fewer epochs than a fresh run."""
+    from ultralytics import YOLO
+    w = find_weights()
+    print("Fine-tuning from", w)
+    gpu = dev() == 0
+    YOLO(str(w)).train(
+        data=str(write_yaml()), epochs=epochs, imgsz=imgsz,
+        batch=(16 if imgsz <= 640 else 8) if gpu else (8 if imgsz <= 640 else 4),
+        device=dev(), workers=4 if gpu else 2, patience=10, cache=cache,
+        optimizer="AdamW", lr0=0.001, warmup_epochs=1,
+        project=str(RUNS_DIR), name=f"accident_ft_{imgsz}",
     )
 
 
@@ -261,6 +336,101 @@ def predict(path):
           f"| threshold {ACCIDENT_CONF} | weights: {w}")
     print("Saved in predictions/: accident/ (boxes drawn), no_accident/, results.csv")
 
+def _yolo_split(root):
+    """A folder with images/ and labels/ (also accepts a dataset root or its test/ folder)."""
+    for cand in (root, root / "test", root / "test" / "test"):
+        if (cand / "images").is_dir() and (cand / "labels").is_dir():
+            return cand
+    return None
+
+
+def _accident_ids_near(d):
+    """Class ids named 'accident' from the closest data.yaml above `d`; None if there is no data.yaml."""
+    import yaml
+    for q in [d, *list(d.parents)[:3]]:
+        y = q / "data.yaml"
+        if y.exists():
+            names = yaml.safe_load(y.read_text()).get("names")
+            if isinstance(names, dict):
+                names = [names[k] for k in sorted(names, key=int)]
+            ids = {i for i, n in enumerate(names or []) if str(n).lower() == "accident"}
+            return ids or None
+    return None
+
+
+def review(folder):
+    """Check predictions against ground truth. The folder can be either:
+         (a) folder/accident/*.jpg + folder/normal/*.jpg         (your own photos, sorted into two folders)
+         (b) a YOLO dataset split with images/ and labels/        (e.g. a dataset's test folder; an image counts as
+                                                                  an accident if its label file has an 'accident' box)
+    Prints accuracy at several thresholds, says whether the errors are fixable by the threshold,
+    and saves the mistakes (original photos) in feedback/ so they can be used to improve the model."""
+    import csv
+    root = Path(folder.strip())
+    if (root / "accident").is_dir() and (root / "normal").is_dir():
+        pos_files, neg_files = images_in(root / "accident"), images_in(root / "normal")
+        print("Ground truth: sub-folders accident/ and normal/")
+    else:
+        d = _yolo_split(root)
+        if d is None:
+            raise SystemExit(f"{root}: expected sub-folders 'accident' + 'normal', or a YOLO split with images/ and labels/")
+        ids = _accident_ids_near(d)
+        pos_files, neg_files = [], []
+        for p in images_in(d / "images"):
+            rows = label_rows(d / "labels" / (p.stem + ".txt"))
+            is_accident = any(c in ids for c, _, _ in rows) if ids else bool(rows)
+            (pos_files if is_accident else neg_files).append(p)
+        print(f"Ground truth: label files in {d / 'labels'} (accident class ids: {sorted(ids) if ids else 'any box'})")
+    if not pos_files and not neg_files:
+        raise SystemExit(f"No images found in {root}")
+    from ultralytics import YOLO
+    w = find_weights()
+    model = YOLO(str(w))
+    P = [(accident_conf(model, p), p) for p in pos_files]
+    N = [(accident_conf(model, p), p) for p in neg_files]
+    print(f"weights: {w}\n{len(P)} accident photos, {len(N)} normal photos")
+    both = bool(P) and bool(N)
+    print("thr   accidents_found   normal_flagged   accuracy  balanced_acc")
+    best_thr, best_bal = None, -1
+    for thr in (0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6):
+        rec = sum(b >= thr for b, _ in P) / len(P) if P else None
+        fa = sum(b >= thr for b, _ in N) / len(N) if N else None
+        acc = (sum(b >= thr for b, _ in P) + sum(b < thr for b, _ in N)) / (len(P) + len(N))
+        bal = (rec + (1 - fa)) / 2 if both else None
+        if both and bal > best_bal:
+            best_thr, best_bal = thr, bal
+        pct = lambda v: f"{v:>8.1%}" if v is not None else "     n/a"
+        print(f"{thr:<5} {pct(rec)}          {pct(fa)}        {acc:>6.1%}    {pct(bal)}")
+    if both:
+        print(f"Best threshold by balanced accuracy: {best_thr} ({best_bal:.1%})")
+    else:
+        print("NOTE: only one kind of photo here, so false alarms / balanced accuracy can't be measured "
+              "(ignore those columns). 'accidents_found' is the number to look at.")
+    if len(N) < 30 and N:
+        print(f"NOTE: only {len(N)} normal photos, so the false-alarm column is very rough (1 photo = {1 / len(N):.0%}).")
+
+    misses = [(b, p) for b, p in P if b < ACCIDENT_CONF]
+    false_alarms = [(b, p) for b, p in N if b >= ACCIDENT_CONF]
+    near = sum(b >= 0.1 for b, _ in misses)
+    blind = sum(b < 0.05 for b, _ in misses)
+    print(f"\nAt threshold {ACCIDENT_CONF}: {len(misses)} missed accidents, {len(false_alarms)} false alarms")
+    print(f"  of the misses: {near} scored 0.10 or more (a lower threshold could catch them), "
+          f"{blind} scored under 0.05 (the model sees nothing: needs more/better training data)")
+
+    out = Path(f"feedback_{root.resolve().parent.name}_{root.resolve().name}")
+    shutil.rmtree(out, ignore_errors=True)
+    (out / "misses").mkdir(parents=True); (out / "false_alarms").mkdir()
+    for b, p in misses:
+        shutil.copy(p, out / "misses" / f"{b:.2f}_{p.name}")
+    for b, p in false_alarms:
+        shutil.copy(p, out / "false_alarms" / f"{b:.2f}_{p.name}")
+    with open(out / "review.csv", "w", newline="") as f:
+        csv.writer(f).writerows([("image", "truth", "confidence"),
+                                 *[(p.name, "accident", round(b, 3)) for b, p in P],
+                                 *[(p.name, "normal", round(b, 3)) for b, p in N]])
+    print(f"Saved in {out}/: misses/, false_alarms/ (original photos, named by confidence), review.csv")
+
+
 
 def report():
     """Image-level results on the test split, and annotated pictures of the mistakes."""
@@ -319,11 +489,18 @@ if __name__ == "__main__":
     elif cmd == "negatives_each":
         make_negatives_each(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 0.2,
                             int(sys.argv[4]) if len(sys.argv) > 4 else 600)
+    elif cmd == "add_dataset":
+        add_dataset(" ".join(sys.argv[2:]))
+    elif cmd == "finetune":
+        finetune(int(sys.argv[2]) if len(sys.argv) > 2 else 30, int(sys.argv[3]) if len(sys.argv) > 3 else 800,
+                 sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] in ("ram", "disk") else False)
     elif cmd == "train":
         train(int(sys.argv[2]) if len(sys.argv) > 2 else 80, int(sys.argv[3]) if len(sys.argv) > 3 else 800,
               sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] in ("ram", "disk") else False)
     elif cmd == "resume":
         resume()
+    elif cmd == "review":
+        review(" ".join(sys.argv[2:]))
     elif cmd == "report":
         report()
     elif cmd == "falsealarm":
