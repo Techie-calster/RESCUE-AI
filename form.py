@@ -214,7 +214,7 @@ if st.button("🚨 Submit Report", type="primary"):
             file_name="incident_report.json",
             mime="application/json",
         )
-
+    
         # ---- Backend hand-off (user-facing part ends here) ----
         # incident_data + image_bytes -> Vision Agent -> Incident State -> ...
         # from vision_agent import analyze_image
