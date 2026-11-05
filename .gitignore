@@ -14,8 +14,6 @@ Training outputs
 runs/
 
 Model weights
-
-*.pt
 *.pth
 
 Datasets
