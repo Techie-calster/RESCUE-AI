@@ -1,0 +1,591 @@
+RESCUE-AI
+MODEL 2: SEVERITY AND RESOURCE DEMAND AGENT
+CODE DOCUMENTATION
+Version: Prototype documentation
+Implementation: Rule-based Python
+Status: Initial implementation completed; testing phase follows
+
+======================================================================
+1. PROJECT OVERVIEW
+======================================================================
+
+RESCUE-AI is a multi-model emergency-response decision-support system
+intended to assist the coordination of road-accident response. The wider
+pipeline is designed to connect accident analysis, casualty assessment,
+resource-demand estimation, ambulance/hospital selection, route
+optimization, and later replanning.
+
+This document covers Model 2 only:
+
+    Model 2 - Severity and Resource Demand Agent
+
+The responsibility of Model 2 is to accept structured incident and
+casualty information from an upstream model or input JSON, classify
+wound severity using the project's agreed score thresholds, estimate
+the required ambulance/medical response resources, and return a
+structured result that downstream components can consume.
+
+The current implementation is a deterministic, rule-based Python
+prototype. It is not a trained machine-learning model and does not
+independently diagnose injuries.
+
+Primary design goals:
+- Work with actual structured JSON input, not only hard-coded examples.
+- Keep the implementation modular and easy to understand.
+- Produce predictable, repeatable outputs from the same inputs.
+- Make thresholds and resource assumptions configurable.
+- Preserve warnings and unknown/unevaluated states rather than silently
+  treating missing information as a negative finding.
+- Keep the interface suitable for integration into a larger JSON-based
+  multi-model pipeline.
+- Allow the rule-based decision layer to be replaced or supplemented by
+  a machine-learning model in a later version without redesigning the
+  entire integration contract.
+
+======================================================================
+2. FOUNDATION
+======================================================================
+
+2.1 Technology and dependencies
+
+Language:
+- Python
+
+Implementation style:
+- Rule-based / deterministic decision logic.
+
+Dependencies:
+- Python standard library only.
+- No external machine-learning framework is required by the current
+  prototype.
+- No GPU, camera, sensor, or other dedicated hardware is required by
+  this component.
+
+The prototype is designed to be lightweight and straightforward to run
+in a normal Python environment.
+
+2.2 Position in the RESCUE-AI pipeline
+
+Conceptual flow:
+
+    Upstream accident / casualty analysis
+                  |
+                  v
+       Structured incident JSON
+                  |
+                  v
+    MODEL 2: Severity and Resource Demand
+                  |
+          +-------+--------+
+          |                |
+          v                v
+    Patient severity   Incident-level
+       summary         resource estimate
+          |                |
+          +-------+--------+
+                  |
+                  v
+       Structured JSON output
+                  |
+                  v
+    Downstream dispatch / ambulance /
+       hospital / route components
+
+Model 2 consumes the results of upstream analysis. It does not perform
+the original accident-image detection itself.
+
+2.3 Input interface
+
+The implementation is designed to accept input supplied as:
+- A JSON file path.
+- A Python dictionary containing the parsed JSON data.
+- A JSON string.
+
+The input is expected to contain incident-level information and
+patient/casualty-level information. The exact fields depend on the
+upstream model's JSON contract, but the information used by the
+decision logic includes:
+
+- Patient/casualty identifiers, where available.
+- Wound or injury confidence/score values for each patient.
+- Incident casualty count or enough patient records to derive it.
+- Hazard or incident context fields when supplied.
+- Any upstream evaluation/status information needed to distinguish
+  confirmed findings from missing or unevaluated information.
+
+The model should not invent values for missing data. Where an input is
+missing, malformed, or unevaluated, the implementation should preserve
+that uncertainty through validation results or warnings.
+
+2.4 Output interface
+
+The output is structured JSON-compatible data intended for downstream
+integration. It contains the relevant results of the assessment, such
+as:
+
+- Patient-level wound/severity classification.
+- Incident-level casualty and severity counts.
+- Incident/casualty-load category.
+- Estimated ambulance and medical/paramedic resource demand.
+- Police requirement.
+- Warnings, validation messages, and uncertainty information.
+- Relevant assumptions or configuration values, where included.
+
+The output is designed to be machine-readable. It can therefore be
+passed to another RESCUE-AI component without requiring that component
+to interpret free-form prose.
+
+2.5 Modular design
+
+The implementation separates responsibilities into logical parts:
+
+- Input handling and validation.
+- Patient-level wound-score processing.
+- Incident-level casualty-load assessment.
+- Paramedic/medical-team demand estimation.
+- Resource summary and output construction.
+- Warning and uncertainty handling.
+
+This separation makes individual rules easier to inspect, test, and
+modify. It also helps keep the current rule-based implementation
+replaceable by a future ML-based estimator.
+
+======================================================================
+3. CORE LOGIC
+======================================================================
+
+3.1 Patient-level wound score
+
+The agreed project rule is to use the maximum wound confidence/score
+associated with each person as that person's wound score.
+
+Reason:
+A person may have more than one detected wound or wound observation.
+Using the maximum score gives the patient-level decision a single
+conservative value and avoids counting one person multiple times merely
+because multiple wounds were detected.
+
+For each patient:
+
+    patient_wound_score = maximum wound score for that patient
+
+If the input contains no usable wound score for a patient, the model
+must not automatically assume that the patient has no wound. The
+missing/unknown state should be retained and reported as appropriate.
+
+3.2 Wound classification thresholds
+
+The project's agreed thresholds are:
+
+    Score <= 0.30:
+        No wound detected by this scoring rule.
+
+    Score > 0.30 and <= 0.80:
+        Non-severe wound.
+
+    Score > 0.80:
+        Severe wound.
+
+Boundary examples:
+
+    0.30  -> No wound
+    0.31  -> Non-severe wound
+    0.80  -> Non-severe wound
+    0.81  -> Severe wound
+
+A score above 0.30 is counted as a wound. A score above 0.80 is counted
+as a severe wound.
+
+These thresholds are project-specific prototype rules. They are not
+medical diagnostic thresholds and must not be presented as clinically
+validated standards.
+
+3.3 Incident-level casualty-load classification
+
+The prototype groups the number of injured casualties into these
+ranges:
+
+    1-2 injured:
+        Low casualty load
+
+    3-5 injured:
+        Moderate casualty load
+
+    6-9 injured:
+        High casualty load
+
+    10 or more injured:
+        Mass-casualty-level load for this prototype
+
+The 10-or-more threshold is an illustrative project threshold used to
+flag a potentially large incident. It is not a universal or officially
+validated mass-casualty definition.
+
+The casualty count should be based on distinct people, not the number
+of wound detections. A person with several wounds remains one casualty.
+
+If there are no injured casualties, the result should reflect zero
+injured rather than forcing the incident into one of the positive
+casualty bands.
+
+3.4 Ambulance demand estimation
+
+The prototype distinguishes between advanced and basic ambulance
+demand using the patient severity counts.
+
+Let:
+
+    Ns = number of severe injured patients
+    Nn = number of non-severe injured patients
+
+Advanced Life Support (ALS) estimate:
+
+    ALS ambulances = Ns
+
+Basic Life Support (BLS) estimate:
+
+    BLS ambulances = ceiling(Nn / 2)
+
+The prototype therefore uses:
+- One ALS ambulance per severe patient.
+- One BLS ambulance for every two non-severe patients, rounding up.
+
+The BLS capacity assumption is configurable. The current prototype
+uses a capacity of 2 non-severe patients per BLS ambulance.
+
+These are planning assumptions for the prototype, not operational
+ambulance-loading rules. Real allocation depends on patient condition,
+staffing, vehicle configuration, local protocols, and dispatcher
+judgment.
+
+3.5 Paramedic / medical-team demand
+
+Paramedic demand is estimated using both total injured casualties and
+the number of severe casualties.
+
+The current prototype uses the following demand factors:
+
+    Teams based on total injured:
+        ceiling(total injured / 10)
+
+    Teams based on severe casualties:
+        ceiling(severe casualties / 3)
+
+    Estimated teams:
+        maximum of the applicable demand estimates, subject to the
+        configured minimum when paramedic support is triggered.
+
+In formula form:
+
+    paramedic_teams =
+        max(ceil(injured_count / 10),
+            ceil(severe_count / 3),
+            configured_minimum_if_triggered)
+
+The team ratios are project assumptions intended to provide a simple
+initial estimate. They are not a clinically or operationally validated
+staffing standard. The design supports multiple paramedic teams rather
+than assuming that one team is always sufficient.
+
+3.6 Police requirement
+
+Police support is marked as mandatory in the current project logic.
+
+This is a fixed project rule for the road-accident response scenario.
+It does not mean that every real-world incident is legally or
+operationally required to receive the same police deployment; actual
+dispatch remains subject to local emergency protocols.
+
+3.7 Fire-service demand
+
+Fire-service demand is excluded from the current Model 2 resource
+calculation.
+
+The model must not invent a fire-unit requirement in the absence of
+reliable fire/hazard evidence and an agreed fire-demand rule. Fire
+response can be incorporated later when the upstream input provides
+suitable hazard information and the project defines a defensible
+decision rule.
+
+3.8 Warnings and unknown states
+
+The model is intended to preserve uncertainty.
+
+Examples:
+- A missing wound score must not automatically become a confirmed
+  no-wound result.
+- An unevaluated field should remain unevaluated/unknown.
+- Invalid or inconsistent input should produce an appropriate warning
+  or validation result.
+- The model should not silently fabricate fire demand or other
+  resources that are not supported by input data and project rules.
+
+Warnings are important because a downstream model or human reviewer
+needs to know when an estimate is based on incomplete information.
+
+======================================================================
+4. DELIVERABLES AND IMPLEMENTATION FILES
+======================================================================
+
+The initial implementation produced the following files/artifacts:
+
+4.1 rescue_ai_model2.py
+
+Main implementation file.
+
+Purpose:
+- Contains the Model 2 rule-based processing logic.
+- Handles supported input forms.
+- Processes patient-level wound scores.
+- Applies the wound severity thresholds.
+- Summarizes incident-level casualty load.
+- Estimates ambulance and paramedic/medical-team demand.
+- Applies the mandatory police rule.
+- Preserves warnings and unknown/unevaluated information.
+- Produces structured JSON-compatible output.
+
+The implementation was reported as approximately 579 lines at the
+time of completion. The exact line count may change as the code is
+edited.
+
+4.2 test_rescue_ai_model2.py
+
+Test file for the main implementation.
+
+Purpose:
+- Exercises the core behavior of Model 2.
+- Checks important decision rules and expected outputs.
+- Helps detect regressions when the implementation is changed.
+
+The initial implementation was reported to have 7 tests, all passing
+at the time the implementation was completed.
+
+A passing prototype test suite confirms that the tested software
+behaves as expected for those test cases. It does not establish
+medical validity or prove that the model is safe for live emergency
+dispatch.
+
+4.3 Actual-input JSON demonstration
+
+A JSON input/output demonstration was prepared using actual structured
+input rather than only a manually hard-coded internal example.
+
+Purpose:
+- Demonstrates how Model 2 receives structured input.
+- Shows how the model processes that input.
+- Makes the JSON integration approach easier to inspect.
+
+4.4 Mass-casualty JSON demonstration
+
+A separate mass-casualty-style JSON demonstration was prepared.
+
+Purpose:
+- Demonstrates behavior when the casualty load is large.
+- Shows how casualty counts and severity counts affect estimated
+  resource demand.
+- Helps inspect the 10-or-more injured illustrative mass-casualty
+  threshold and multi-team paramedic logic.
+
+Note:
+The names above identify the implementation artifacts from the
+completed work. Keep the actual files in the project folder/repository
+and update this documentation whenever their behavior changes.
+
+======================================================================
+5. TESTING STATUS AND NEXT TESTING WORK
+======================================================================
+
+Initial status:
+- Main Python implementation completed.
+- JSON input/output demonstration prepared.
+- Mass-casualty demonstration prepared.
+- Seven initial automated tests were reported as passing.
+
+Recommended next testing phase:
+
+1. Threshold boundary tests
+   - 0.30, 0.31, 0.80, and 0.81.
+   - Confirm that the boundary comparisons remain exactly as specified.
+
+2. Multiple wounds per patient
+   - Confirm that the maximum wound score is used.
+   - Confirm that one patient is counted only once.
+
+3. Missing and unknown information
+   - Missing score.
+   - Empty wound list.
+   - Unevaluated upstream result.
+   - Missing optional incident fields.
+
+4. Casualty-load boundaries
+   - 0, 1, 2, 3, 5, 6, 9, and 10 injured casualties.
+
+5. Resource-estimation boundaries
+   - No severe patients.
+   - One severe patient.
+   - Multiple severe patients.
+   - Odd and even non-severe patient counts.
+   - Paramedic estimates at and around the configured team thresholds.
+
+6. Input-format tests
+   - JSON file path.
+   - Python dictionary.
+   - JSON string.
+   - Invalid JSON.
+   - Incorrect data types and malformed records.
+
+7. Integration tests
+   - Confirm that the upstream model's actual JSON can be consumed.
+   - Confirm that the output fields and types match the expectations of
+     downstream RESCUE-AI components.
+   - Confirm that warnings and unknown states survive the pipeline.
+
+8. Regression tests
+   - Re-run the complete test suite after every code change.
+
+Testing should use synthetic and appropriately authorized data. Do not
+use the prototype as a live dispatch authority.
+
+======================================================================
+6. LIMITATIONS
+======================================================================
+
+6.1 External/internal injuries
+
+The current logic is based on wound information supplied to Model 2.
+It cannot independently detect internal hemorrhage, internal organ
+damage, traumatic brain injury, or other hidden injuries that are not
+represented in the input.
+
+A person may therefore appear to have a low visible-wound score while
+having a serious internal injury.
+
+6.2 No vital-sign assessment
+
+The current prototype does not assess physiological measurements such
+as:
+- Pulse / heart rate.
+- Breathing rate.
+- Blood pressure.
+- Oxygen saturation.
+- Level of consciousness.
+- Other clinical observations.
+
+These factors can be essential to real triage and medical prioritization.
+They are outside the current implementation scope.
+
+6.3 Dependence on upstream model quality
+
+Model 2 depends on the correctness and completeness of the wound scores
+and casualty records it receives.
+
+If the upstream image-analysis or detection component misses a wound,
+misidentifies a person, assigns an inaccurate confidence score, or
+duplicates a casualty, Model 2 may produce an inaccurate severity or
+resource estimate.
+
+6.4 Thresholds are not clinically validated
+
+The 0.30 and 0.80 cut-offs are agreed project rules for this prototype.
+They are not validated medical triage thresholds.
+
+A confidence score from an image-analysis system is not automatically
+equivalent to clinical injury severity.
+
+6.5 Rule-based rather than learned prediction
+
+The current version uses fixed rules and configured assumptions. It
+does not learn from historical emergency-response data, optimize its
+own resource estimates, or provide statistically calibrated
+probabilities.
+
+This makes the prototype explainable and predictable, but limits its
+ability to adapt to complex real-world incidents.
+
+6.6 Resource ratios are assumptions
+
+The current ALS, BLS, and paramedic-team calculations use simplified
+capacity and staffing assumptions. Real resource requirements depend
+on:
+- Actual patient condition and triage category.
+- Distance and travel time.
+- Availability and type of ambulances.
+- Number and training of responders.
+- Local emergency-service protocols.
+- Hospital capability and capacity.
+- Simultaneous incidents and regional resource availability.
+
+The current estimates must therefore be treated as preliminary
+planning estimates, not final dispatch instructions.
+
+6.7 Fire demand is not implemented
+
+Fire-service demand is deliberately excluded from the current resource
+calculation. The model does not estimate fire units unless a future
+version defines reliable input signals and an explicit rule.
+
+6.8 No live operational integration
+
+The current component is a prototype. It is not connected to live
+112/108 dispatch systems, ambulance GPS/telematics, hospital systems,
+police systems, or real-time responder availability.
+
+6.9 Not a replacement for professional judgment
+
+RESCUE-AI Model 2 is a decision-support prototype. It must not replace
+trained emergency personnel, medical professionals, dispatchers, or
+official triage protocols.
+
+Any future real-world deployment would require domain-expert review,
+clinical and operational validation, safety testing, privacy/security
+controls, and approval from the relevant authorities.
+
+======================================================================
+7. FUTURE IMPROVEMENTS
+======================================================================
+
+Potential future improvements, subject to project scope and reliable
+data availability:
+
+- Add validated clinical observations and vital signs as input features.
+- Add a mechanism for handling suspected internal injuries.
+- Improve casualty identity matching and duplicate detection.
+- Define evidence-based resource ratios with emergency-service experts.
+- Add a fire-demand rule based on verified fire or hazardous-material
+  indicators.
+- Replace or augment fixed rules with a trained resource-demand model
+  when a suitable dataset is available.
+- Compare predicted demand with actual dispatch/resource usage.
+- Add confidence, uncertainty, and explanation fields to the output.
+- Integrate with downstream ambulance, hospital, and route-selection
+  components.
+- Perform broader scenario testing and expert evaluation.
+
+Any ML replacement should preserve the JSON interface where practical,
+so that other RESCUE-AI components do not need unnecessary changes.
+
+======================================================================
+8. SUMMARY
+======================================================================
+
+Model 2 is the Severity and Resource Demand Agent within RESCUE-AI.
+Its current implementation is a modular, rule-based Python prototype
+that accepts structured incident/casualty data, derives one wound
+score per person using the maximum detected score, classifies wound
+severity using the agreed 0.30 and 0.80 thresholds, summarizes
+casualty load, and estimates ambulance and paramedic-team requirements.
+
+The implementation also applies the project's mandatory police rule,
+deliberately excludes unsupported fire-service demand, and is designed
+to retain warnings and unknown states. The initial deliverables include
+the main Python module, an automated test file, an actual-input JSON
+demonstration, and a mass-casualty JSON demonstration.
+
+The prototype provides a transparent starting point for integration
+and testing. Its outputs are estimates based on simplified project
+assumptions, not medical diagnoses or live emergency dispatch
+instructions.
+
+======================================================================
+END OF DOCUMENT
+======================================================================
