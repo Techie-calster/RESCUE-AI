@@ -1,0 +1,118 @@
+{
+    "incident_type": "vehicle_collision",
+    "reported_casualties": 1,
+    "incident_time": "11:06",
+    "location": {
+        "latitude": 28.687149,
+        "longitude": 77.214207,
+        "description": "naar"
+    },
+    "additional_information": "",
+    "image_filename": "crash2.png",
+    "submitted_at": "2026-11-02T11:06:11",
+    "image": {
+        "filename": "crash2.png",
+        "width": 1536,
+        "height": 1024
+    },
+    "accident_detection": {
+        "detected": true,
+        "confidence": 0.6941,
+        "threshold": 0.3,
+        "bounding_boxes": [
+            {
+                "box_id": 1,
+                "class_id": 0,
+                "class_name": "Accident",
+                "confidence": 0.6941,
+                "bbox_xyxy": [
+                    1.64,
+                    0.0,
+                    1529.07,
+                    1016.27
+                ]
+            }
+        ]
+    },
+    "person_detection": {
+        "detected": true,
+        "count": 1,
+        "confidence_threshold": 0.2,
+        "image_size": 960,
+        "crop_padding": 0.08,
+        "blur_threshold": 80.0,
+        "people": [
+            {
+                "person_id": 1,
+                "confidence": 0.2561,
+                "bbox_original_xyxy": [
+                    946,
+                    82,
+                    1240,
+                    309
+                ],
+                "crop_region_original_xyxy": [
+                    923,
+                    64,
+                    1263,
+                    327
+                ],
+                "crop_path": "/Users/gauravkumar/Desktop/Project/Rescue_Ai/output/crash2/person_crops/person_001.jpg",
+                "image_quality": {
+                    "sharpness_score": 2387.81,
+                    "is_blurry": false,
+                    "wound_eligible": true
+                }
+            }
+        ]
+    },
+    "wound_detection": {
+        "confidence_threshold": 0.15,
+        "image_size": 640,
+        "confidence_adjustment": {
+            "method": "25_percent_uplift_with_minimum_0.50",
+            "uplift_factor": 1.25,
+            "minimum_score": 0.5,
+            "maximum_score": 1.0,
+            "note": "Display-only transformation; not a calibrated probability or medical severity score."
+        },
+        "people_total": 1,
+        "people_evaluated": 1,
+        "people_skipped": 0,
+        "visually_injured_people": 1,
+        "people_without_detected_wounds": 0,
+        "total_wounds_detected": 1,
+        "overall_injury_score": 0.6584,
+        "score_method": "maximum_adjusted_wound_confidence",
+        "people": [
+            {
+                "person_id": 1,
+                "evaluation_status": "completed",
+                "wound_detected": true,
+                "wound_count": 1,
+                "wounds": [
+                    {
+                        "wound_id": 1,
+                        "class_id": 0,
+                        "class_name": "wound",
+                        "confidence": 0.6584,
+                        "bbox_crop_xyxy": [
+                            86.9,
+                            68.64,
+                            177.87,
+                            164.29
+                        ],
+                        "bbox_original_xyxy": [
+                            1009.9,
+                            132.64,
+                            1100.87,
+                            228.29
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    "status": "completed",
+    "generated_at": "2026-11-02T11:06:11.215776+05:30"
+}

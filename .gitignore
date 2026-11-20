@@ -14,12 +14,11 @@ Training outputs
 runs/
 
 Model weights
-
-*.pt
 *.pth
 
+Rescue_Ai.code-workspace
 Datasets
-
+record
 accident_dataset/
 custom_dataset/
 data/
